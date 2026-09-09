@@ -1,0 +1,96 @@
+services:
+  # ---- ThingsBoard: nhan telemetry qua MQTT, quan ly device --------------
+  thingsboard:
+    image: thingsboard/tb-postgres
+    container_name: iot-temp-thingsboard
+    restart: unless-stopped
+    ports:
+      - "3001:9090"   # giao dien web quan tri (doi tu 3000 -> 3001, tranh dung port hay gap)
+      - "1883:1883"   # MQTT — thiet bi that/cong cu khac tren may ban co the ket noi vao day
+    volumes:
+      - tb-data:/data
+      - tb-logs:/var/log/thingsboard
+
+  # ---- EMQX: broker MQTT trung tam — Backend/Frontend/thiet bi khac deu ---
+  # ---- subscribe thang vao day, khong qua ThingsBoard hay server.py -------
+  emqx:
+    image: emqx/emqx:5.4.1
+    container_name: iot-temp-emqx
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    ports:
+      - "1884:1883"    # MQTT thuan (vd cho DigitalTwin Backend .NET)
+      - "8083:8083"    # MQTT-over-WebSocket — trinh duyet (index.html) dung cong nay
+      - "18083:18083"  # dashboard quan tri EMQX (user/pass mac dinh: admin / public)
+
+  # ---- init: chay 1 lan, tu tao 22 device + noi Rule Chain -> EMQX --------
+  # ---- (thay the toan bo cac buoc lam tay o baocaothuctap/TaiLieuKyThuat_TPHCM_HeatmapVaEMQX.md)
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    container_name: iot-temp-init
+    depends_on:
+      - thingsboard
+      - emqx
+    environment:
+      TB_HOST: http://thingsboard:9090
+      TB_USERNAME: tenant@thingsboard.org
+      TB_PASSWORD: tenant
+      EMQX_HOST: emqx      # ten service trong compose network — khong phai host.docker.internal
+      EMQX_PORT: "1883"    # cong MQTT NOI BO cua container emqx (khac voi 1884 map ra host)
+      SHARED_DIR: /shared
+    volumes:
+      - shared-data:/shared
+
+  # ---- simulator: gia lap 22 tram do nhiet do, gui qua MQTT ---------------
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: iot-temp-simulator
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      THINGSBOARD_HOST: thingsboard
+      THINGSBOARD_PORT: "1883"
+      DEVICES_TOKEN_FILE: /shared/device_tokens.json
+    volumes:
+      - shared-data:/shared
+
+  # ---- server: FastAPI, cung cap vi tri/ten quan luc frontend moi mo trang -
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: iot-temp-server
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      TB_HOST: http://thingsboard:9090
+      TB_USERNAME: tenant@thingsboard.org
+      TB_PASSWORD: tenant
+    ports:
+      - "8001:8001"
+
+  # ---- frontend: chi la file tinh (index.html), phuc vu qua nginx --------
+  frontend:
+    image: nginx:alpine
+    container_name: iot-temp-frontend
+    restart: unless-stopped
+    depends_on:
+      - server
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+    ports:
+      - "8080:80"
+
+volumes:
+  tb-data:
+  tb-logs:
+  shared-data:

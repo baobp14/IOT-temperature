@@ -8,6 +8,7 @@ Cai thu vien: pip install paho-mqtt
 Chay: py simulate_districts.py
 """
 
+import os
 import sys
 import time
 import random
@@ -21,15 +22,22 @@ import paho.mqtt.client as mqtt
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
-THINGSBOARD_HOST = "localhost"
-THINGSBOARD_PORT = 1883
+THINGSBOARD_HOST = os.environ.get("THINGSBOARD_HOST", "localhost")
+THINGSBOARD_PORT = int(os.environ.get("THINGSBOARD_PORT", "1883"))
 SEND_INTERVAL_SECONDS = 3
+
+# Neu chay qua docker-compose, service "init" tu tao device + ghi token that
+# vao file JSON dung chung (xem init_devices.py) — doc de nap de len tren
+# token demo hardcode ben duoi. Chay ngoai Docker (khong dat DEVICES_TOKEN_FILE)
+# thi giu nguyen token demo cu.
+DEVICES_TOKEN_FILE = os.environ.get("DEVICES_TOKEN_FILE")
 
 # id, ten hien thi, lat, lng, token, nhiet do nen (bias) — noi thanh dong duc
 # nong hon (hieu ung dao nhiet do thi - urban heat island), ngoai thanh/ven
 # song/bien mat hon.
 #
-# TODO: thay "token" bang Access Token that cua Device tren ThingsBoard cua ban.
+# TODO: thay "token" bang Access Token that cua Device tren ThingsBoard cua ban
+# (khong can sua neu chay qua docker-compose — service "init" tu dien, xem tren).
 DISTRICTS = [
     {"id": "Q1",         "name": "Quận 1",          "lat": 10.7756, "lng": 106.7019, "token": "P3UI6rfIWv5dsADYYDMA", "base": 34.5},
     {"id": "Q3",         "name": "Quận 3",          "lat": 10.7843, "lng": 106.6829, "token": "NGeWDUcBkzVlQW75rrkC", "base": 34.0},
@@ -84,7 +92,33 @@ def simulate_district(district):
         client.disconnect()
 
 
+def load_real_tokens():
+    """Doc token that tu file JSON (do service 'init' tao ra khi chay Docker).
+    Cho toi da 120s vi ThingsBoard + init co the mat vai chuc giay de san sang."""
+    if not DEVICES_TOKEN_FILE:
+        return
+    print(f"Cho file token: {DEVICES_TOKEN_FILE} ...")
+    waited = 0
+    while not os.path.exists(DEVICES_TOKEN_FILE) and waited < 120:
+        time.sleep(2)
+        waited += 2
+    if not os.path.exists(DEVICES_TOKEN_FILE):
+        print(f"CANH BAO: khong thay {DEVICES_TOKEN_FILE} sau {waited}s — dung token demo (co the sai).")
+        return
+
+    with open(DEVICES_TOKEN_FILE, encoding="utf-8") as f:
+        tokens = json.load(f)
+    matched = 0
+    for d in DISTRICTS:
+        if d["id"] in tokens:
+            d["token"] = tokens[d["id"]]
+            matched += 1
+    print(f"Da nap {matched}/{len(DISTRICTS)} token that tu {DEVICES_TOKEN_FILE}")
+
+
 def main():
+    load_real_tokens()
+
     threads = []
     for district in DISTRICTS:
         t = threading.Thread(target=simulate_district, args=(district,), daemon=True)

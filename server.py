@@ -8,15 +8,17 @@ Chay: py -m uvicorn server:app --reload --port 8001
 Test: http://localhost:8001/api/districts/temperatures
 """
 
+import os
 import time
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# TODO: sua lai cho dung ThingsBoard cua ban
-TB_HOST = "http://localhost:3001"
-TB_USERNAME = "tenant@thingsboard.org"
-TB_PASSWORD = "tenant"
+# Doc tu bien moi truong (dat san trong docker-compose.yml) — TODO: sua lai
+# neu chay ngoai Docker, tro ve dung ThingsBoard cua ban.
+TB_HOST = os.environ.get("TB_HOST", "http://localhost:3001")
+TB_USERNAME = os.environ.get("TB_USERNAME", "tenant@thingsboard.org")
+TB_PASSWORD = os.environ.get("TB_PASSWORD", "tenant")
 
 # id -> (ten Device tren ThingsBoard, ten hien thi, lat, lng)
 DISTRICTS = {
