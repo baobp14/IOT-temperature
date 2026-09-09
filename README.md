@@ -4,7 +4,7 @@ Demo giám sát nhiệt độ theo thời gian thực cho 22 quận/huyện TP.H
 
 ## Yêu cầu
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) đã cài và đang chạy
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) 
 
 
 ## Chạy demo 
