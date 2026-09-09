@@ -13,8 +13,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# LUU Y: sua lai cho dung ThingsBoard cua ban — 3 dong duoi la cua may demo
-# local (mac dinh ThingsBoard CE: tenant@thingsboard.org / tenant).
+# TODO: sua lai cho dung ThingsBoard cua ban
 TB_HOST = "http://localhost:3001"
 TB_USERNAME = "tenant@thingsboard.org"
 TB_PASSWORD = "tenant"

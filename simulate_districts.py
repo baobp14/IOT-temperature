@@ -29,10 +29,7 @@ SEND_INTERVAL_SECONDS = 3
 # nong hon (hieu ung dao nhiet do thi - urban heat island), ngoai thanh/ven
 # song/bien mat hon.
 #
-# LUU Y: cac "token" ben duoi la Access Token demo, gan voi Device tren
-# ThingsBoard local cua nguoi viet code nay — KHONG dung duoc cho ThingsBoard
-# cua ban. Vao ThingsBoard cua ban -> Devices -> tao/chon device -> "Manage
-# credentials" de lay token that, roi thay vao dung vi tri tuong ung o day.
+# TODO: thay "token" bang Access Token that cua Device tren ThingsBoard cua ban.
 DISTRICTS = [
     {"id": "Q1",         "name": "Quận 1",          "lat": 10.7756, "lng": 106.7019, "token": "P3UI6rfIWv5dsADYYDMA", "base": 34.5},
     {"id": "Q3",         "name": "Quận 3",          "lat": 10.7843, "lng": 106.6829, "token": "NGeWDUcBkzVlQW75rrkC", "base": 34.0},
