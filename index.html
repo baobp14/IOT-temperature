@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Bản đồ nhiệt TPHCM</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Cesium.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+  #cesiumContainer { height: 100%; width: 100%; }
+  #legend { position: absolute; bottom: 30px; left: 10px; z-index: 10; background: rgba(20,20,30,0.85); color: #eee; padding: 10px 14px; border-radius: 8px; font-size: 12px; }
+  #legend .bar { width: 200px; height: 14px; border-radius: 4px; margin: 6px 0; background: linear-gradient(to right, #00b400, #a0dc00, #ffe600, #ff8c00, #e61e1e); }
+  #legend .labels { display: flex; justify-content: space-between; }
+  #info { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(20,20,30,0.85); color: #eee; padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: 260px; }
+  #districtInfo { display: none; position: absolute; top: 10px; right: 10px; z-index: 10; background: rgba(20,20,30,0.92); color: #eee; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+  #hoverTooltip { display: none; position: absolute; z-index: 20; background: rgba(20,20,30,0.92); color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; pointer-events: none; white-space: nowrap; transform: translate(14px, -50%); }
+</style>
+</head>
+<body>
+
+<div id="cesiumContainer"></div>
+<div id="info">Bản đồ nhiệt độ TPHCM — dữ liệu giả lập từ 22 trạm cảm biến (ThingsBoard). Click vào bản đồ để xem quận gần nhất.</div>
+<div id="districtInfo"></div>
+<div id="hoverTooltip"></div>
+<div id="legend">
+  <div>Nhiệt độ</div>
+  <div class="bar"></div>
+  <div class="labels"><span>Mát</span><span>Nóng</span></div>
+</div>
+
+<script>
+(async () => {
+try {
+  Cesium.Ion.defaultAccessToken = undefined;
+
+  const API_URL = "http://localhost:8001/api/districts/temperatures"; // chi dung 1 lan luc tai trang (fetchInitial), khong con polling lap lai
+
+  // Bao quanh toan bo cac diem quan/huyen (tinh tu server.py) + bien nho
+  const BOUNDS = { west: 106.44, south: 10.34, east: 107.00, north: 10.95 };
+  const GRID_W = 140, GRID_H = 140; // do phan giai luoi noi suy IDW (thap, phong to muot bang canvas)
+
+  const viewer = new Cesium.Viewer("cesiumContainer", {
+    baseLayer: Cesium.ImageryLayer.fromProviderAsync(
+      Promise.resolve(new Cesium.UrlTemplateImageryProvider({
+        url: "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
+        subdomains: ["a", "b", "c", "d"],
+        maximumLevel: 19,
+      }))
+    ),
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+    baseLayerPicker: false,
+    animation: false,
+    timeline: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    navigationHelpButton: false,
+    shadows: false,
+  });
+  viewer.scene.globe.enableLighting = false;
+
+  // setView (khong phai flyTo) — flyTo goi ngay sau khi tao Viewer de bi
+  // chinh camera mac dinh cua Cesium ghi de o khung hinh dau tien, can setView
+  // de dat vi tri tuc thi, khong bi ghi de.
+  viewer.camera.setView({
+    destination: Cesium.Rectangle.fromDegrees(BOUNDS.west, BOUNDS.south, BOUNDS.east, BOUNDS.north),
+  });
+
+  // ---- Noi suy IDW (Inverse Distance Weighting) — tinh nhiet do tai moi o
+  // luoi dua tren khoang cach toi TAT CA tram cam bien, cang xa tram anh
+  // huong cang it (power=2). Ket qua la 1 "tam phu" lien tuc khap ban do,
+  // khong co khoang trong, khong giong kieu heatmap cham-glow thong thuong.
+  // Ham dung chung: tinh nhiet do noi suy tai 1 diem (lat,lng) bat ky — dung
+  // ca cho ve luoi heatmap LAN cho tooltip theo chuot, dam bao con so hover
+  // hien ra KHOP CHINH XAC voi mau dang ve tren ban do (khong lech nhau).
+  function idwValueAt(lat, lng, pts) {
+    let wsum = 0, vsum = 0;
+    for (const p of pts) {
+      const dx = (p.lng - lng) * 0.85; // hieu chinh nhe theo vi do cho khoang cach can doi hon
+      const dy = p.lat - lat;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 1e-10) return p.temperature;
+      const w = 1 / d2; // power=2 — chuan IDW, hoa tron mem giua cac tram hon power=4 (bot hieu ung "bong bong" tung cum)
+      wsum += w;
+      vsum += w * p.temperature;
+    }
+    return wsum > 0 ? vsum / wsum : NaN;
+  }
+
+  function idwGrid(districts, bounds, gw, gh) {
+    const values = new Float32Array(gw * gh);
+    const pts = districts.filter((d) => d.temperature != null);
+    for (let iy = 0; iy < gh; iy++) {
+      const lat = bounds.north - (iy / (gh - 1)) * (bounds.north - bounds.south);
+      for (let ix = 0; ix < gw; ix++) {
+        const lng = bounds.west + (ix / (gw - 1)) * (bounds.east - bounds.west);
+        values[iy * gw + ix] = idwValueAt(lat, lng, pts);
+      }
+    }
+    return blurGrid(values, gw, gh);
+  }
+
+  // Box blur don gian (ban kinh 3 o) tren luoi gia tri — lam mem them ranh
+  // gioi giua cac "cum" quanh tung tram, ngoai viec ha power o idwValueAt.
+  function blurGrid(values, gw, gh, radius = 3) {
+    const out = new Float32Array(gw * gh);
+    for (let iy = 0; iy < gh; iy++) {
+      for (let ix = 0; ix < gw; ix++) {
+        let sum = 0, count = 0;
+        for (let oy = -radius; oy <= radius; oy++) {
+          const ny = iy + oy;
+          if (ny < 0 || ny >= gh) continue;
+          for (let ox = -radius; ox <= radius; ox++) {
+            const nx = ix + ox;
+            if (nx < 0 || nx >= gw) continue;
+            sum += values[ny * gw + nx];
+            count++;
+          }
+        }
+        out[iy * gw + ix] = sum / count;
+      }
+    }
+    return out;
+  }
+
+  // Gradient mau: mat (xanh la) -> nong (do) — 5 diem dung noi suy tuyen tinh
+  const STOPS = [
+    { t: 30, c: [0, 180, 0] },
+    { t: 32, c: [160, 220, 0] },
+    { t: 34, c: [255, 230, 0] },
+    { t: 36, c: [255, 140, 0] },
+    { t: 38, c: [230, 30, 30] },
+  ];
+  function colorAt(temp) {
+    if (temp <= STOPS[0].t) return STOPS[0].c;
+    if (temp >= STOPS[STOPS.length - 1].t) return STOPS[STOPS.length - 1].c;
+    for (let i = 0; i < STOPS.length - 1; i++) {
+      const a = STOPS[i], b = STOPS[i + 1];
+      if (temp >= a.t && temp <= b.t) {
+        const f = (temp - a.t) / (b.t - a.t);
+        return [
+          Math.round(a.c[0] + (b.c[0] - a.c[0]) * f),
+          Math.round(a.c[1] + (b.c[1] - a.c[1]) * f),
+          Math.round(a.c[2] + (b.c[2] - a.c[2]) * f),
+        ];
+      }
+    }
+    return STOPS[STOPS.length - 1].c;
+  }
+
+  function buildCanvas(districts) {
+    const values = idwGrid(districts, BOUNDS, GRID_W, GRID_H);
+    const small = document.createElement("canvas");
+    small.width = GRID_W;
+    small.height = GRID_H;
+    const sctx = small.getContext("2d");
+    const imgData = sctx.createImageData(GRID_W, GRID_H);
+    for (let i = 0; i < values.length; i++) {
+      const [r, g, b] = Number.isNaN(values[i]) ? [0, 0, 0] : colorAt(values[i]);
+      imgData.data[i * 4 + 0] = r;
+      imgData.data[i * 4 + 1] = g;
+      imgData.data[i * 4 + 2] = b;
+      imgData.data[i * 4 + 3] = Number.isNaN(values[i]) ? 0 : 115; // alpha ~45% — mo hon de thay nen ban do ro hon
+    }
+    sctx.putImageData(imgData, 0, 0);
+
+    // Phong to bang canvas lon hon VOI imageSmoothingEnabled -> tao hieu
+    // ung "mem/blur" tu luoi tho (140x140) ma khong can thu vien blur rieng.
+    const big = document.createElement("canvas");
+    big.width = 1024;
+    big.height = 1024;
+    const bctx = big.getContext("2d");
+    bctx.imageSmoothingEnabled = true;
+    bctx.imageSmoothingQuality = "high";
+    bctx.drawImage(small, 0, 0, big.width, big.height);
+    return big;
+  }
+
+  let heatEntity = null;
+  let currentDistricts = [];
+  const stationEntities = {}; // districtId -> entity, tao 1 lan, chi update nhan
+
+  function updateStationMarkers(districts) {
+    for (const d of districts) {
+      const label = d.temperature != null ? `${d.name}\n${d.temperature.toFixed(1)}°C` : `${d.name}\n—`;
+      if (stationEntities[d.id]) {
+        stationEntities[d.id].label.text = label;
+        continue;
+      }
+      stationEntities[d.id] = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(d.lng, d.lat),
+        point: {
+          pixelSize: 8,
+          color: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: label,
+          font: "bold 12px sans-serif",
+          fillColor: Cesium.Color.BLACK,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          eyeOffset: new Cesium.Cartesian3(0, 0, -10), // day label ve phia camera, khong bi diem/heatmap de len
+        },
+      });
+    }
+  }
+
+  // Ve lai heatmap + marker tu du lieu hien co trong currentDistricts (KHONG
+  // fetch gi ca) — dung chung cho ca lan tai dau tien va moi lan MQTT bao co
+  // gia tri moi.
+  function redraw() {
+    const canvas = buildCanvas(currentDistricts);
+
+    if (heatEntity) viewer.entities.remove(heatEntity);
+    heatEntity = viewer.entities.add({
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(BOUNDS.west, BOUNDS.south, BOUNDS.east, BOUNDS.north),
+        material: new Cesium.ImageMaterialProperty({ image: canvas, transparent: true }),
+        height: 0,
+      },
+    });
+
+    updateStationMarkers(currentDistricts);
+  }
+
+  // Tai vi tri + nhiet do BAN DAU 1 LAN qua REST (can lat/lng/ten quan de ve
+  // marker, cai nay chua co tren MQTT payload) — sau do KHONG poll lai nua,
+  // moi cap nhat tiep theo den qua MQTT (muc 2 ben duoi).
+  async function fetchInitial() {
+    try {
+      const res = await fetch(API_URL);
+      if (!res.ok) throw new Error("API loi");
+      const data = await res.json();
+      currentDistricts = data.districts;
+      redraw();
+    } catch (e) {
+      console.error("Lỗi tải dữ liệu ban đầu:", e);
+    }
+  }
+
+  // ---- Ket noi thang toi EMQX qua WebSocket (mqtt.js) — KHONG qua server.py
+  // nua cho phan cap nhat real-time. Dung dung kien truc so do dev dua: React
+  // frontend subscribe thang broker qua WSS :8083, khong can Backend forward. ----
+  const EMQX_WS_URL = "ws://localhost:8083/mqtt";
+  let redrawPending = false;
+
+  function scheduleRedraw() {
+    if (redrawPending) return;
+    redrawPending = true;
+    setTimeout(() => { redrawPending = false; redraw(); }, 300); // gom nhieu message toi gan nhau thanh 1 lan ve
+  }
+
+  function connectMqtt() {
+    const client = mqtt.connect(EMQX_WS_URL, { reconnectPeriod: 3000 });
+
+    client.on("connect", () => {
+      console.log("Da ket noi EMQX qua WebSocket");
+      client.subscribe("twin/+/telemetry");
+    });
+
+    client.on("message", (topic, payload) => {
+      // topic dang: twin/CamBien-Q1/telemetry -> tach ra "Q1"
+      const m = topic.match(/^twin\/CamBien-(.+)\/telemetry$/);
+      if (!m) return; // khong phai device cua TPHCM (vd CamBien-ToaNhaA cua demo khac)
+      const districtId = m[1];
+      const district = currentDistricts.find((d) => d.id === districtId);
+      if (!district) return;
+
+      try {
+        const data = JSON.parse(payload.toString());
+        if (data.temperature != null) {
+          district.temperature = data.temperature;
+          scheduleRedraw();
+        }
+      } catch (e) {
+        console.error("Loi parse MQTT payload:", e);
+      }
+    });
+
+    client.on("error", (err) => console.error("Loi MQTT:", err));
+  }
+
+  await fetchInitial();
+  connectMqtt();
+
+  // ---- Click ban do: tim quan gan nhat voi diem vua click, hien nhiet do that ----
+  const districtInfo = document.getElementById("districtInfo");
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction((click) => {
+    const cartesian = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
+    if (!Cesium.defined(cartesian)) {
+      districtInfo.style.display = "none";
+      return;
+    }
+    const carto = Cesium.Cartographic.fromCartesian(cartesian);
+    const lng = Cesium.Math.toDegrees(carto.longitude);
+    const lat = Cesium.Math.toDegrees(carto.latitude);
+
+    let nearest = null, bestD = Infinity;
+    for (const d of currentDistricts) {
+      const dx = d.lng - lng, dy = d.lat - lat;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestD) { bestD = dist; nearest = d; }
+    }
+    if (nearest) {
+      districtInfo.innerHTML = `<b>${nearest.name}</b><br/>Nhiệt độ: ${nearest.temperature != null ? nearest.temperature.toFixed(1) + " °C" : "Đang tải..."}`;
+      districtInfo.style.display = "block";
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  // ---- Di chuot: noi suy nhiet do NGAY TAI DIEM chuot dang tro (khong phai
+  // gia tri cua tram gan nhat) — dung idwValueAt, khop dung mau da ve.
+  const hoverTooltip = document.getElementById("hoverTooltip");
+  handler.setInputAction((movement) => {
+    const cartesian = viewer.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid);
+    if (!Cesium.defined(cartesian) || currentDistricts.length === 0) {
+      hoverTooltip.style.display = "none";
+      return;
+    }
+    const carto = Cesium.Cartographic.fromCartesian(cartesian);
+    const lng = Cesium.Math.toDegrees(carto.longitude);
+    const lat = Cesium.Math.toDegrees(carto.latitude);
+
+    const pts = currentDistricts.filter((d) => d.temperature != null);
+    const temp = idwValueAt(lat, lng, pts);
+
+    if (Number.isNaN(temp)) {
+      hoverTooltip.style.display = "none";
+      return;
+    }
+
+    hoverTooltip.textContent = `${temp.toFixed(1)} °C`;
+    hoverTooltip.style.left = movement.endPosition.x + "px";
+    hoverTooltip.style.top = movement.endPosition.y + "px";
+    hoverTooltip.style.display = "block";
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+} catch (e) {
+  document.getElementById("info").textContent = "Lỗi: " + e.message;
+  console.error(e);
+}
+})();
+</script>
+
+</body>
+</html>
