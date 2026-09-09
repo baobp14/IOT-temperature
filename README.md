@@ -6,9 +6,8 @@ Demo giám sát nhiệt độ theo thời gian thực cho 22 quận/huyện TP.H
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) đã cài và đang chạy
 
-Chỉ cần vậy — không cần cài Python/Node gì thêm, mọi thứ chạy trong container.
 
-## Chạy demo — chỉ 1 lệnh
+## Chạy demo 
 
 ```bash
 docker compose up --build
@@ -51,18 +50,4 @@ simulator (giả lập 22 trạm) --MQTT--> ThingsBoard --Rule Chain--> EMQX --W
 - **`server`**: cấp vị trí/tên quận cho trình duyệt lúc mở trang (dữ liệu này không có trong MQTT).
 - **`frontend`**: trang bản đồ, sau khi tải xong thì **kết nối thẳng vào EMQX** để nhận nhiệt độ real-time — không cần hỏi lại `server` liên tục.
 
-Chi tiết kỹ thuật đầy đủ (bug đã gặp, quyết định thiết kế...) xem thêm ở tài liệu nội bộ `baocaothuctap/TaiLieuKyThuat_TPHCM_HeatmapVaEMQX.md`.
 
-## Muốn nối thêm hệ thống khác (Backend .NET, mobile...)
-
-Không cần đụng vào code — chỉ cần subscribe MQTT vào:
-```
-Broker: localhost:1884 (MQTT thuần) hoặc localhost:8083 (WebSocket)
-Topic:  twin/CamBien-{id}/telemetry
-```
-Danh sách `{id}`: `Q1, Q3, Q4, Q5, Q6, Q7, Q8, Q10, Q11, Q12, BinhThanh, TanBinh, TanPhu, PhuNhuan, GoVap, BinhTan, ThuDuc, BinhChanh, HocMon, CuChi, NhaBe, CanGio`
-
-## Sự cố thường gặp
-
-- **Port đã bị chiếm** (3001/1883/1884/8083/18083/8001/8080): đóng chương trình đang dùng port đó, hoặc sửa lại port map trong `docker-compose.yml`.
-- **`docker compose` báo "Docker daemon not running"**: mở Docker Desktop lên trước, chờ icon 🐳 ổn định rồi chạy lại.
